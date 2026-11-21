@@ -112,12 +112,12 @@ wss.on('connection', (ws) => {
       const dest = rtmpUrl.endsWith('/') ? rtmpUrl + streamKey : rtmpUrl + '/' + streamKey;
       console.log('Starting RTMP push to:', rtmpUrl);
 
-      // FIX ONLY: Skipping - removed +discardcorrupt, 15fps -> 24fps, 800k -> 1200k.
-      // Old: discardcorrupt threw away a whole frame on one bad chunk = visible skip.
-      // Old: 15fps made every dropped frame obvious.
-      // New: +genpts repairs timestamps, 24fps + 1200k = smooth. Keyframe still every 2s (48/24fps).
+      // FIX: -f webm + probesize/analyzeduration so ffmpeg does NOT guess format and stall on timestamp jump.
+      // FIX: Bitrate 800k to MATCH what TagLive actually sends (was 2500k, ffmpeg starved).
+      // FIX: -g 30 at 15fps = keyframe every 2s. Facebook needs this, else it freezes on first frame.
+      // FIX: -vsync cfr + -async 1 so static canvas / verse change does not stall timestamps.
       ffmpeg = spawn('ffmpeg', [
-        '-fflags', '+genpts+nobuffer',
+        '-fflags', '+discardcorrupt+nobuffer',
         '-probesize', '32',
         '-analyzeduration', '0',
         '-f', 'webm',
@@ -126,14 +126,14 @@ wss.on('connection', (ws) => {
         '-preset', 'veryfast',
         '-tune', 'zerolatency',
         '-pix_fmt', 'yuv420p',
-        '-r', '24',
-        '-fps_mode', 'cfr',
-        '-g', '48',
-        '-keyint_min', '48',
+        '-r', '15',
+        '-vsync', 'cfr',
+        '-g', '30',
+        '-keyint_min', '30',
         '-sc_threshold', '0',
-        '-b:v', '1200k',
-        '-maxrate', '1200k',
-        '-bufsize', '2400k',
+        '-b:v', '800k',
+        '-maxrate', '800k',
+        '-bufsize', '1600k',
         '-c:a', 'aac',
         '-b:a', '128k',
         '-ar', '44100',
