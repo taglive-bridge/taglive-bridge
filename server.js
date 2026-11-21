@@ -1,6 +1,7 @@
 // TagLive Bridge - Chat + RTMP Pusher - FIXED
 // Cloady: Node + ffmpeg
 // FIX: One ffmpeg per live, never killed on chunk gap, forced keyframes, heartbeat back to TagLive
+// FIX: No discardcorrupt, low bitrate for slow 4G, drop on stdin backpressure so no skip / cut
 const http = require('http');
 const WebSocket = require('ws');
 const { spawn } = require('child_process');
@@ -72,9 +73,10 @@ wss.on('connection', (ws) => {
       if (ffmpeg && isPushing) {
         bytesIn += data.length;
         try {
-          // FIX: Never kill ffmpeg on backpressure / EPIPE. Drop this chunk, keep RTMP alive.
-          const ok = ffmpeg.stdin.write(data);
-          if (!ok) { /* backpressure - drop, do not close */ }
+          // FIX: If ffmpeg stdin is already backed up over 1MB, drop THIS chunk.
+          // Old code let the buffer pile up, then ffmpeg burst / skipped. Dropping one small chunk is smoother.
+          if (ffmpeg.stdin && ffmpeg.stdin.writableLength > 1000000) return;
+          ffmpeg.stdin.write(data);
         } catch {
           // EPIPE / stdin closed - do NOT kill ffmpeg here, let ffmpeg close handler decide
         }
@@ -113,11 +115,12 @@ wss.on('connection', (ws) => {
       console.log('Starting RTMP push to:', rtmpUrl);
 
       // FIX: -f webm + probesize/analyzeduration so ffmpeg does NOT guess format and stall on timestamp jump.
-      // FIX: Bitrate 800k to MATCH what TagLive actually sends (was 2500k, ffmpeg starved).
+      // FIX: +genpts (NOT +discardcorrupt) - repair timestamps, do NOT throw away frames = no skip.
+      // FIX: 500k video / 64k audio to MATCH slow 4G + 480p. 800k/1200k starved ffmpeg and caused cut.
       // FIX: -g 30 at 15fps = keyframe every 2s. Facebook needs this, else it freezes on first frame.
-      // FIX: -vsync cfr + -async 1 so static canvas / verse change does not stall timestamps.
+      // FIX: -fps_mode cfr + -async 1 so static canvas / verse change does not stall timestamps.
       ffmpeg = spawn('ffmpeg', [
-        '-fflags', '+discardcorrupt+nobuffer',
+        '-fflags', '+genpts+nobuffer',
         '-probesize', '32',
         '-analyzeduration', '0',
         '-f', 'webm',
@@ -127,15 +130,15 @@ wss.on('connection', (ws) => {
         '-tune', 'zerolatency',
         '-pix_fmt', 'yuv420p',
         '-r', '15',
-        '-vsync', 'cfr',
+        '-fps_mode', 'cfr',
         '-g', '30',
         '-keyint_min', '30',
         '-sc_threshold', '0',
-        '-b:v', '800k',
-        '-maxrate', '800k',
-        '-bufsize', '1600k',
+        '-b:v', '500k',
+        '-maxrate', '500k',
+        '-bufsize', '1000k',
         '-c:a', 'aac',
-        '-b:a', '128k',
+        '-b:a', '64k',
         '-ar', '44100',
         '-async', '1',
         '-f', 'flv',
